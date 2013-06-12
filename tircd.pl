@@ -8,7 +8,7 @@
 
 use strict;
 use JSON::Any;
-use Net::Twitter::Lite::WithAPIv1_1;
+use Net::Twitter::Lite::WithAPIv1_1 0.12000;
 use Time::Local;
 use File::Glob ':glob';
 use IO::File;
