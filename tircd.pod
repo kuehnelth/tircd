@@ -14,7 +14,7 @@ L<POE>
 
 L<POE::Filter::IRCD>
 
-L<Net::Twitter::Lite>
+L<Net::Twitter::Lite::WithAPIv1_1>
 
 L<JSON::Any>
 
@@ -140,7 +140,13 @@ B<!retweet a7f>
 
 To reply to a status update, use the offerbot command !retweet followed by the 3 letter tweet identifier.
 
-B<!retweet a7f>
+B<!reply 6eb @tircdbot not today! >
+
+=item Favoriting a tweet
+
+To favorite a tweet use the offerbot command !favorite followed by the 3 letter tweet identifier.
+
+B<!favorite a44>
 
 =item Listing the users you follow
 
