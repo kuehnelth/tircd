@@ -1,4 +1,11 @@
-=== v. 2011-11-18-01 ==
+=== v.30 2013-06-16 ===
+FEATURES:
+- Added !fav[orite] to enable favoriting tweets via tircdbot
+
+FIXES:
+- Merge https://github.com/DexterTheDragon/tircd/tree/upgrade_to_v1_1_api to enable Twitter API v1.1 compatibility
+
+=== v. 2011-11-18-01 ===
 FEATURES
 * Added the tircd bot, offerbot style control, allows for retweeting and replying (which don't fit scope of IRC metaphor) plus most other api functions
 * Added settings related to tircdbot and how #twitter is handled. View the descriptions of these settings in the tircd.cfg.example file:
