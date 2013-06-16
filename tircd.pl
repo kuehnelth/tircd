@@ -365,16 +365,19 @@ sub twitter_oauth_login_begin {
 sub twitter_oauth_pin_ask {
 	my ($kernel, $heap) = @_[KERNEL,HEAP];
 
+    $@=undef;
+
     my $authorization_url = eval { $heap->{'twitter'}->get_authorization_url() };
     if ($@) {
 	    $kernel->yield('server_reply',599,"Unable to retrieve authentication URL from Twitter.");
+	    $kernel->yield('server_reply',599,"$@");
 	    $kernel->yield('server_reply',599,"The Twitter API seems to be experiencing problems. Try again momentarily.");
 	    $kernel->yield('shutdown');
         return 1;
     }
 
 	$kernel->yield('server_reply',463,"Please authorize this connection at:");
-	$kernel->yield('server_reply',463,$heap->{'twitter'}->get_authorization_url);
+	$kernel->yield('server_reply',463,$authorization_url);
 	$kernel->yield('server_reply',463,"To continue connecting, type /stats pin <PIN>, where <PIN> is the PIN returned by the twitter authorize page.");
 	$kernel->yield('server_reply',463,"Some clients require you to use /quote stats pin <PIN>");
 	# half an hour until disconnect
