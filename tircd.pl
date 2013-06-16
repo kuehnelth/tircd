@@ -136,6 +136,7 @@ POE::Component::Server::TCP->new(
 
     twitter_post_tweet => \&twitter_post_tweet,
     twitter_retweet_tweet => \&twitter_retweet_tweet,
+    twitter_favorite_tweet => \&twitter_favorite_tweet,
     twitter_reply_to_tweet => \&twitter_reply_to_tweet,
     twitter_send_dm => \&twitter_send_dm,
     twitter_conversation => \&twitter_conversation,
@@ -1133,9 +1134,29 @@ sub twitter_retweet_tweet {
         $kernel->yield('user_msg','PRIVMSG',$heap->{'username'},"#twitter","Retweet failed. Try again shortly.");
         $kernel->call($_[SESSION],'twitter_api_error','Unable to retweet status.',$error);
         return;
-    } 
+    }
 
     $kernel->yield('user_msg','PRIVMSG',$heap->{'username'},"#twitter","Retweet Successful.");
+}
+
+sub twitter_favorite_tweet {
+    my($kernel, $heap, $tweet_id) = @_[KERNEL, HEAP, ARG0];
+
+    unless($tweet_id) {
+        $kernel->yield('user_msg','PRIVMSG',$heap->{'username'},"#twitter","favorite requires a tweet-id.");
+        return;
+    }
+
+    $kernel->post('logger','log','favoriting status:'. $tweet_id);
+    my $rt = eval { $heap->{'twitter'}->create_favorite($tweet_id) };
+    my $error = $@;
+    if (!$rt && ref $error && $error->isa("Net::Twitter::Lite::Error") && $error->code() >= 400) {
+        $kernel->yield('user_msg','PRIVMSG',$heap->{'username'},"#twitter","favorite failed. Try again shortly.");
+        $kernel->call($_[SESSION],'twitter_api_error','Unable to favorite status.',$error);
+        return;
+    }
+
+    $kernel->yield('user_msg','PRIVMSG',$heap->{'username'},"#twitter","Favorite Successful.");
 }
 
 sub twitter_reply_to_tweet {
@@ -1210,6 +1231,16 @@ sub irc_twitterbot_command {
             'exec' => sub {
                     my ($cmd, $rt_id) = @_;
                     $kernel->yield('twitter_retweet_tweet',$rt_id);
+            },
+        },
+
+        { 'cmdmatch' => 'favorite|fav',
+            'argmatch' => '[0-9a-f]{3}\b',
+            'twid' => 1,
+            'help' => "![favorite|fav] <tweed-id> - Favorite a tweet. tweet-id is the 3 digit code preceding the tweet.",
+            'exec' => sub {
+                    my ($cmd, $rt_id) = @_;
+                    $kernel->yield('twitter_favorite_tweet',$rt_id);
             },
         },
 
