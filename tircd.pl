@@ -1859,54 +1859,70 @@ sub get_timeline_ticker_slot {
 
 
 sub twitter_search {
-  my ($kernel, $heap, $chan) = @_[KERNEL, HEAP, ARG0];
+    my ($kernel, $heap, $chan) = @_[KERNEL, HEAP, ARG0];
 
-  if (!$heap->{'channels'}->{$chan}->{'joined'} || !$heap->{'channels'}->{$chan}->{'topic'}) {
-    #if we aren't in the channel, don't do anything, this will keep us from restarting timers for channels we are no longer in
-    return;
-  }
-  
-  my $data;
-  my $error;
-  if ($heap->{'channels'}->{$chan}->{'search_since_id'}) {
-    $data = eval {$heap->{'twitter'}->search({q => $heap->{'channels'}->{$chan}->{'topic'}, rpp => 100, since_id => $heap->{'channels'}->{$chan}->{'search_since_id'}, include_entities => 1});};
-    $error = $@;
-  } else {   
-    $data = eval {$heap->{'twitter'}->search({q => $heap->{'channels'}->{$chan}->{'topic'}, rpp => 100, include_entities => 1});};
-    $error = $@;
-  }
-
-  my $delay = 30;
-
-  if (!$data || $data->{'search_metadata'}->{'max_id'} < $heap->{'channels'}->{$chan}->{'search_since_id'} ) {
-    $data = {results => []};
-    $kernel->call($_[SESSION],'twitter_api_error','Unable to update search results.',$error);   
-    if ($error) {
-      if ($error->code() == 420) {
-        # We are ratelimited
-        $delay = 400;
-        $kernel->post('logger','log','We are ratelimited, waiting for '. $delay .' seconds before repeating search',$heap->{'username'});
-      }
+    # Prevent restarting search jobs for part'ed channels
+    if (!$heap->{'channels'}->{$chan}->{'joined'} || !$heap->{'channels'}->{$chan}->{'topic'}) {
+        return;
     }
 
-  } else {
-    $heap->{'channels'}->{$chan}->{'search_since_id'} = $data->{'search_metadata'}->{'max_id'};
-    if (@{$data->{'statuses'}} > 0) {
-      $kernel->post('logger','log','Received '.@{$data->{'statuses'}}.' search results from Twitter.',$heap->{'username'});
-    }      
-  }
+    # Setup search request
+    my $data;
+    my $error;
+    my $delay = 30;
+    my $search_args = {
+        q => $heap->{'channels'}->{$chan}->{'topic'},
+        rpp => 100,
+        include_entities => 1,
+    };
 
-  foreach my $result (sort {$a->{'id'} <=> $b->{'id'}} @{$data->{'statuses'}}) {
-    ### Search API does not support entities yet. 
-    #   When that happens we should either copy the code from timeline to expand urls and realname
-    #   Or we should split that out as a function 
-    #   /Olatho
-    if ($result->{'user'}->{'screen_name'} ne $heap->{'username'}) {
-      $kernel->yield('user_msg','PRIVMSG',$result->{'user'}->{'screen_name'},$chan,$result->{'text'});
+    # Append since_id if present
+    if ($heap->{'channels'}->{$chan}->{'search_since_id'}) {
+        $search_args->{ 'since_id' } = $heap->{'channels'}->{$chan}->{'search_since_id'},
     }
-  }
 
-  $kernel->delay_add('twitter_search',$delay,$chan);    
+    # Search for matching tweets
+    $data = eval { $heap->{'twitter'}->search($search_args); };
+    $error = $@;
+
+    # Handle no data returned
+    if (!$data || $data->{'search_metadata'}->{'max_id'} < $heap->{'channels'}->{$chan}->{'search_since_id'} ) {
+        $data = { results => [] };
+        $kernel->call($_[SESSION],'twitter_api_error','Unable to update search results.',$error);
+
+        if ($error) {
+            if ($error->code() == 420) {
+                # We are ratelimited
+                $delay = 400;
+                $kernel->post('logger','log','We are ratelimited, waiting for '. $delay .' seconds before repeating search',$heap->{'username'});
+            } else {
+                # Something else happened or ratelimit error code changed
+                $kernel->post('logger','log','Got unexpected error from twitter::Search');
+                print Dumper($data);
+                $kernel->delay_add('twitter_search',$delay,$chan);
+            }
+        }
+
+
+    } else {
+        # Update since_id, log message count
+        $heap->{'channels'}->{$chan}->{'search_since_id'} = $data->{'search_metadata'}->{'max_id'};
+        if (@{$data->{'statuses'}} > 0) {
+            $kernel->post('logger','log','Received '.@{$data->{'statuses'}}.' search results from Twitter.',$heap->{'username'});
+        }
+    }
+
+    foreach my $result (sort {$a->{'id'} <=> $b->{'id'}} @{$data->{'statuses'}}) {
+        ### Search API does not support entities yet.
+        #   When that happens we should either copy the code from timeline to expand urls and realname
+        #   Or we should split that out as a function
+        #   /Olatho
+        if ($result->{'user'}->{'screen_name'} ne $heap->{'username'}) {
+            $kernel->yield('user_msg','PRIVMSG',$result->{'user'}->{'screen_name'},$chan,$result->{'text'});
+        }
+    }
+
+    $kernel->delay_add('twitter_search',$delay,$chan);
 }
 
 sub tircd_get_message_parts {
