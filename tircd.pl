@@ -21,6 +21,7 @@ use List::Util 'shuffle';
 use HTML::Entities;
 
 use Digest::SHA1  qw(sha1_base64);
+use Data::Dumper;
 
 
 my $VERSION = 2011082301;
@@ -152,6 +153,7 @@ POE::Component::Server::TCP->new(
     remfriend => \&tircd_remfriend,
     updatefriend => \&tircd_updatefriend,
     getfollower => \&tircd_getfollower,
+    filter_statuses => \&tircd_filter_statuses,
 
     verify_ssl => \&tircd_verify_ssl,
     basicauth_login => \&twitter_basic_login,
@@ -253,7 +255,7 @@ sub twitter_api_error {
 sub tircd_updatefriend {
   my ($heap, $new) = @_[HEAP, ARG0];
 
-  foreach my $friend (@{$heap->{'friends'}}) {
+  foreach my $friend (values(%{$heap->{'friends'}})) {
     if ($friend->{'id'} == $new->{'id'}) {
       $friend = $new;
       return 1;
@@ -266,18 +268,19 @@ sub tircd_updatefriend {
 sub tircd_getfriend {
   my ($heap, $target) = @_[HEAP, ARG0];
 
-  foreach my $friend (@{$heap->{'friends'}}) {
-    if ($friend->{'screen_name'} eq $target) {
-      return $friend;
-    }
+  my @friend = grep { $_->{'screen_name'} eq $target } values(%{$heap->{'friends'}});
+  if (@friend) {
+    return $friend[0];
+  } else {
+    return 0;
   }
-  return 0;
 }
 
 sub tircd_getfollower {
   my ($heap, $target) = @_[HEAP, ARG0];
 
-  foreach my $follower (@{$heap->{'followers'}}) {
+  my %follows = $heap->{'followers'};
+  foreach my $follower (values(%follows)) {
     if ($follower->{'screen_name'} eq $target) {
       return $follower;
     }
@@ -285,16 +288,58 @@ sub tircd_getfollower {
   return 0;
 }
 
+sub tircd_filter_statuses {
+    my ($heap, %statuses_hash) = @_[HEAP, ARG0];
+    # filter out tweets from lame clients
+    # expand entities hashes
+
+    my %return_hash;
+
+    print Dumper %statuses_hash;
+
+    while (my ($tweet_id, $tweet_object) = each %statuses_hash) {
+
+        # Add filter tuples of (search, replace) according to config
+        my @filters = [];
+
+        # Expand URLS
+        if ($heap->{'config'}->{'expand_urls'}==1 && defined($tweet_object->{'entities'}->{'urls'})) {
+            foreach my $url (@{$tweet_object->{'entities'}->{'urls'}}) {
+                if (defined($url->{'expanded_url'})) {
+                    push(@filters, [ $url->{'url'}, $url->{'expanded_url'} ]);
+                }
+            }
+        }
+
+        # Expand realnames
+        if ($heap->{'config'}->{'show_realname'} == 1 && defined($tweet_object->{'entities'}->{'user_mentions'})) {
+            foreach my $user (@{$tweet_object->{'entities'}->{'user_mentions'}}) {
+                my $search  = "@" . $user->{'screen_name'};
+                my $replace = "@" . $user->{'screen_name'} . " (" . $user->{'name'} . ")";
+                push(@filters, [ $search, $replace ]);
+            }
+        }
+
+        foreach my $filter (@filters) {
+            $tweet_object->{'text'} =~ s/@$filter[0]/@$filter[1]/;
+        }
+
+        $return_hash{$tweet_id} = $tweet_object
+    }
+
+    return %return_hash;
+}
+
 sub tircd_remfriend {
   my ($heap, $target) = @_[HEAP, ARG0];
 
-  my @tmp = ();
-  foreach my $friend (@{$heap->{'friends'}}) {
+  my %tmp;
+  foreach my $friend (values(%{$heap->{'friends'}})) {
     if ($friend->{'screen_name'} ne $target) {
-      push(@tmp,$friend);
+      $tmp{$friend->{'id'}} = $friend;
     }
   }
-  $heap->{'friends'} = \@tmp;
+  $heap->{'friends'} = %tmp;
 }
 
 #called once we have a user/pass, attempts to auth with twitter
@@ -1373,7 +1418,7 @@ sub irc_invite {
   if ($user) {
     if (!$user->{'protected'}) {
       #if the user isn't protected, and we are following them now, then have 'em 'JOIN' the channel
-      push(@{$heap->{'friends'}},$user);
+      $heap->{'friends'}->{$user->{'id'}} = $user;
       $kernel->yield('server_reply',341,$user->{'screen_name'},$chan);
       $kernel->yield('user_msg','JOIN',$user->{'screen_name'},$chan);
       $kernel->post('logger','log',"Started following $target",$heap->{'username'});
@@ -1537,10 +1582,12 @@ sub channel_twitter {
   }
 
   #cache our friends and followers
-  $heap->{'friends'} = \@friends;
-  $heap->{'followers'} = \@followers;
-  $kernel->post('logger','log','Received friends list from Twitter, caching '.@{$heap->{'friends'}}.' friends.',$heap->{'username'});
-  $kernel->post('logger','log','Received followers list from Twitter, caching '.@{$heap->{'followers'}}.' followers.',$heap->{'username'});
+  my %friends_hash = map { $_->{'id'}, $_ } @friends;
+  my %follows_hash = map { $_->{'id'}, $_ } @followers;
+  $heap->{'friends'} = \%friends_hash;
+  $heap->{'followers'} = \%follows_hash;
+  $kernel->post('logger','log','Received friends list from Twitter, caching '.@friends.' friends.',$heap->{'username'});
+  $kernel->post('logger','log','Received followers list from Twitter, caching '.@followers.' followers.',$heap->{'username'});
 
   #spoof the channel join
   $kernel->yield('user_msg','JOIN',$heap->{'username'},$chan);
@@ -1549,7 +1596,7 @@ sub channel_twitter {
 
   #the the list of our users for /NAMES
   my $lastmsg = '';
-  foreach my $user (@{$heap->{'friends'}}) {
+  foreach my $user (@friends) {
     my $ov ='';
     if ($user->{'screen_name'} eq $heap->{'username'}) {
       $lastmsg = $user->{'status'}->{'text'};
@@ -1572,7 +1619,7 @@ sub channel_twitter {
       my $tmp = $$data[0]->{'user'};
       $tmp->{'status'} = $$data[0];
       $lastmsg = $tmp->{'status'}->{'text'};
-      push(@{$heap->{'friends'}},$tmp);
+      $heap->{'friends'}->{$tmp->{'id'}} = $tmp;
     }
   }
 
@@ -1596,196 +1643,161 @@ sub channel_twitter {
 ########### TWITTER EVENT/ALARM FUNCTIONS
 
 sub twitter_timeline {
-  my ($kernel, $heap, $silent) = @_[KERNEL, HEAP, ARG0];
+    my ($kernel, $heap, $silent) = @_[KERNEL, HEAP, ARG0];
 
-  #get updated messages
-  my ($timeline, $error);
+    #get updated messages
+    my ($timeline, $error);
 
-  my %timeline_request = (
-    count => $heap->{'config'}->{'timeline_count'},
-    include_entities => 1,
-  );
+    my %timeline_request = (
+        count => $heap->{'config'}->{'timeline_count'},
+        include_entities => 1,
+    );
 
-  if ($heap->{'timeline_since_id'}) {
-    $timeline_request{'since_id'} = $heap->{'timeline_since_id'};
-  }
-
-  $timeline = eval { $heap->{'twitter'}->home_timeline(\%timeline_request) };
-  $error = $@;
-
-  #sometimes the twitter API returns undef, so we gotta check here
-  if (!$timeline || @$timeline == 0 || @{$timeline}[0]->{'id'} < $heap->{'timeline_since_id'} ) {
-    $timeline = [];
-    if (ref $error && $error->isa("Net::Twitter::Lite::Error") && $error->code() >= 400) {
-      $kernel->call($_[SESSION],'twitter_api_error','Unable to update timeline.',$error);
+    if ($heap->{'timeline_since_id'}) {
+        $timeline_request{'since_id'} = $heap->{'timeline_since_id'};
     }
-  } else {
-    #if we got new data save our position
-    $heap->{'timeline_since_id'} = @{$timeline}[0]->{'id'};
-    $kernel->post('logger','log','Received '.@$timeline.' timeline updates from Twitter.',$heap->{'username'});
-  }
 
-  #get updated @replies too
-  my $replies;
-  if ($heap->{'replies_since_id'}) {
-    $replies = eval { $heap->{'twitter'}->replies({since_id => $heap->{'replies_since_id'}, include_entities => 1}) };
+    print Dumper %timeline_request;
+    $timeline = eval { $heap->{'twitter'}->home_timeline(\%timeline_request) };
     $error = $@;
-  } else {
-    $replies = eval { $heap->{'twitter'}->replies({page =>1, include_entities => 1}) }; #avoid a bug in Net::Twitter
-    $error = $@;
-  }
 
-  if (!$replies || @$replies == 0) {
-    $replies = [];
-    if (ref $error && $error->isa("Net::Twitter::Lite::Error") && $error->code() >= 400) {
-      $kernel->call($_[SESSION],'twitter_api_error','Unable to update @replies.',$error);
-    }
-  } else {
-    $heap->{'replies_since_id'} = @{$replies}[0]->{'id'};
-    $kernel->post('logger','log','Received '.@$replies.' @replies from Twitter.',$heap->{'username'});
-  }
-
-  #weave the two arrays together into one stream, removing duplicates
-  my @tmpdata = (@{$timeline},@{$replies});
-  my %tmphash = ();
-  foreach my $item (@tmpdata) {
-    $tmphash{$item->{'id'}} = $item;
-  }
-
-  #loop through each message
-  foreach my $item (sort {$a->{'id'} <=> $b->{'id'}} values %tmphash) {
-    my $tmp = $item->{'user'};
-    my $is_following = ();
-    $tmp->{'status'} = $item;
-
-    # Replace URLS and expand Real Names
-    # This is quite ugly, but it's the best I could do...
-    # Ignore it for my own messages
-
-    if (lc($item->{'user'}->{'screen_name'}) ne lc($heap->{'username'})) {
-      if ($heap->{'config'}->{'expand_urls'}==1 && defined($item->{'entities'}->{'urls'})) {
-        foreach my $url (@{$item->{'entities'}->{'urls'}}) {
-          if (defined($url->{'expanded_url'})) {
-            $kernel->post('logger','log','Replacing URL ' . $url->{'url'} . ' with ' . $url->{'expanded_url'},$heap->{'username'}) if ($config{'debug'} >= 2);
-            my $search = $url->{'url'};
-            my $replace = $url->{'expanded_url'};
-            $item->{'text'} =~ s/$search/$replace/g;
-            # Also replace text in retweets
-            if(defined($item->{'retweeted_status'})) {
-               $item->{'retweeted_status'}->{'text'} =~ s/$search/$replace/g;
-            }
-          }
-       }
-    }
-
-       if ($heap->{'config'}->{'show_realname'} == 1 && defined($item->{'entities'}->{'user_mentions'})) {
-          foreach my $user (@{$item->{'entities'}->{'user_mentions'}}) {
-             $kernel->post('logger','log','Showing realname ' . $user->{'name'} . ' for ' . $user->{'screen_name'},$heap->{'username'}) if ($config{'debug'} >= 2);
-             my $search  = "@" . $user->{'screen_name'};
-             my $replace = "@" . $user->{'screen_name'} . " (" . $user->{'name'} . ")";
-
-             $item->{'text'} =~ s/$search/$replace/g;
-
-             # Also replace text in retweets
-             if(defined($item->{'retweeted_status'})) {
-                $item->{'retweeted_status'}->{'text'} =~ s/$search/$replace/ig;
-
-                if ($user->{'screen_name'} eq $item->{'retweeted_status'}->{'user'}->{'screen_name'}) {
-                     # If the text does not contain the username of the person being retweeted
-                     # also add realname first in text
-                   if ($item->{'retweeted_status'}->{'text'} !~ /$item->{'retweeted_status'}->{'user'}->{'screen_name'}/) {
-                      my $search  = "^";
-                      my $replace = "(" . $user->{'name'} . ") ";
-                      $item->{'retweeted_status'}->{'text'} =~ s/$search/$replace/ig;
-                   }
-                }
-             }
-          }
-       }
-    }
-
-    # assign a ticker slot for later referencing with !reply or !retweet
-    my $ticker_slot = get_timeline_ticker_slot();
-    $heap->{'timeline_ticker'}->{$ticker_slot} = $item->{'id'};
-    $item->{'tircd_ticker_slot'} = $ticker_slot;
-    $item->{'tircd_ticker_slot_display'} = ($heap->{'config'}->{'display_ticker_slots'}) ? '[' . $ticker_slot . '] ' : '';
-    $kernel->post('logger','log','Slot ' . $ticker_slot . ' now contains tweet with id: ' . $item->{'id'},$heap->{'username'}) if ($config{'debug'} >= 2);
-
-    if (my $friend = $kernel->call($_[SESSION],'getfriend',$item->{'user'}->{'screen_name'})) { #if we've seen 'em before just update our cache
-      $kernel->call($_[SESSION],'updatefriend',$tmp);
+    #sometimes the twitter API returns undef, so we gotta check here
+    if (!$timeline || @$timeline == 0 || @{$timeline}[0]->{'id'} < $heap->{'timeline_since_id'} ) {
+        $timeline = [];
+        if (ref $error && $error->isa("Net::Twitter::Lite::Error") && $error->code() >= 400) {
+            $kernel->call($_[SESSION],'twitter_api_error','Unable to update timeline.',$error);
+        }
+        # TODO handle other error possibilities
     } else {
-      # removed the fake join tempoarily while, I figure out the better way to handle this.  I think the best is to leave it like this and treat the channels as if they are -n
-      # Olatho - Re enabled this - fixes the bug where you do not see tweets from people you add from other clients.
-      # But there is a problem here.
-      # If you are not following the user, and they mention you, they are joining the channel, and you can't /invite later..
-      # Adding a fake part again imediately if they are not a friend, to make it clear what happens
-      # Also, only adding them to 'friends' if they really are friends
+        #if we got new data save our position
+        $heap->{'timeline_since_id'} = @{$timeline}[0]->{'id'};
+        $kernel->post('logger','log','Received '.@$timeline.' timeline updates from Twitter.',$heap->{'username'});
+    }
 
-      $kernel->post('logger','log','Getting userinfo for ' . $item->{'user'}->{'screen_name'},$heap->{'username'}) if $config{'debug'} >=2;
-      $is_following = eval { $heap->{'twitter'}->show_user({screen_name => $item->{'user'}->{'screen_name'}}) };
-      $kernel->post('logger','log','Got name: ' . $is_following->{'name'} . ' following: ' . $is_following->{'following'}, $heap->{'username'}) if $config{'debug'} >=2;
-      if ($is_following->{'following'} == 1) {
-  # We are following this user, add to 'friends'
-        push(@{$heap->{'friends'}},$tmp);
-      }
-      # Join them to #twitter if they are not yourself
-      if (lc($item->{'user'}->{'screen_name'}) ne lc($heap->{'username'})) {
-        $kernel->yield('user_msg','JOIN',$item->{'user'}->{'screen_name'},'#twitter') unless ($silent);
-        # Check if they should have voice (+v)
-        if ($kernel->call($_[SESSION],'getfollower',$item->{'user'}->{'screen_name'})) {
-          $heap->{'channels'}->{'#twitter'}->{'names'}->{$item->{'user'}->{'screen_name'}} = '+';
-          $kernel->yield('server_reply','MODE','#twitter','+v',$item->{'user'}->{'screen_name'});
+    print Dumper $timeline;
+
+    #get updated @replies too
+    my $replies;
+    my $replies_request_args = {
+        page =>1,
+        include_entities => 1,
+    };
+
+    if ($heap->{'replies_since_id'}) {
+        $replies_request_args->{'since_id'} = $heap->{'replies_since_id'};
+    }
+
+    $replies = eval {
+        $heap->{'twitter'}->replies(%$replies_request_args);
+    };
+    $error = $@;
+
+    if (!$replies || @$replies == 0) {
+        $replies = [];
+        if (ref $error && $error->isa("Net::Twitter::Lite::Error") && $error->code() >= 400) {
+            $kernel->call($_[SESSION],'twitter_api_error','Unable to update @replies.',$error);
+        }
+    } else {
+        $heap->{'replies_since_id'} = @{$replies}[0]->{'id'};
+        $kernel->post('logger','log','Received '.@$replies.' @replies from Twitter.',$heap->{'username'});
+    }
+
+    print Dumper $replies;
+
+    #weave the two arrays together into one stream, removing duplicates
+    my @tmpdata = (@{$timeline},@{$replies});
+    my %tmphash = ();
+    foreach my $item (@tmpdata) {
+        $tmphash{$item->{'id'}} = $item;
+    }
+
+    # Filter out self tweets (if filter_self), transform entities, filter clients/keywords
+    my %filtered_tweets = $kernel->call($_[SESSION], 'filter_statuses', %tmphash);
+    print Dumper %filtered_tweets;
+
+    #loop through each message
+    foreach my $item (sort {$a->{'id'} <=> $b->{'id'}} values %filtered_tweets) {
+        my $tmp = $item->{'user'};
+        my $is_following = ();
+        $tmp->{'status'} = $item;
+
+        # Assign a ticker slot for later referencing with !reply or !retweet
+        my $ticker_slot = get_timeline_ticker_slot();
+        $heap->{'timeline_ticker'}->{$ticker_slot} = $item->{'id'};
+        $item->{'tircd_ticker_slot'} = $ticker_slot;
+        $item->{'tircd_ticker_slot_display'} = ($heap->{'config'}->{'display_ticker_slots'}) ? '[' . $ticker_slot . '] ' : '';
+        $kernel->post('logger','log','Slot ' . $ticker_slot . ' now contains tweet with id: ' . $item->{'id'},$heap->{'username'}) if ($config{'debug'} >= 2);
+
+        #if we've seen 'em before just update our cache
+        if (my $friend = $kernel->call($_[SESSION],'getfriend',$item->{'user'}->{'screen_name'})) {
+            $kernel->call($_[SESSION],'updatefriend',$tmp);
         } else {
-          $heap->{'channels'}->{'#twitter'}->{'names'}->{$item->{'user'}->{'screen_name'}} = '';
+
+            $kernel->post('logger','log','Getting userinfo for ' . $item->{'user'}->{'screen_name'},$heap->{'username'}) if $config{'debug'} >=2;
+            $is_following = eval { $heap->{'twitter'}->show_user({screen_name => $item->{'user'}->{'screen_name'}}) };
+            $kernel->post('logger','log','Got name: ' . $is_following->{'name'} . ' following: ' . $is_following->{'following'}, $heap->{'username'}) if $config{'debug'} >=2;
+            if ($is_following->{'following'} == 1) {
+                # We are following this user, add to 'friends'
+                $heap->{'friends'}->{$tmp->{'id'}} = $tmp;
+            }
+            # Join them to #twitter if they are not yourself
+            if (lc($item->{'user'}->{'screen_name'}) ne lc($heap->{'username'})) {
+                $kernel->yield('user_msg','JOIN',$item->{'user'}->{'screen_name'},'#twitter') unless ($silent);
+                # Check if they should have voice (+v)
+                if ($kernel->call($_[SESSION],'getfollower',$item->{'user'}->{'screen_name'})) {
+                    $heap->{'channels'}->{'#twitter'}->{'names'}->{$item->{'user'}->{'screen_name'}} = '+';
+                    $kernel->yield('server_reply','MODE','#twitter','+v',$item->{'user'}->{'screen_name'});
+                } else {
+                    $heap->{'channels'}->{'#twitter'}->{'names'}->{$item->{'user'}->{'screen_name'}} = '';
+                }
+            }
         }
-      }
+
+# filter out our own messages / don't display if not in silent mode
+# Olatho - Don't understand what the original code tried to do, but my changes tries to do the right thing
+# This will lead to seeing messages twice if you are tweeting actively, as messages are parsed both when you tweet, and when tircd receives the updates
+# But I prefer that instead of missing messages I add from other clients
+# This can be fixed by using a global buffer/cache to filter out the messages, not just the latest topic
+        if ((lc($item->{'user'}->{'screen_name'}) ne lc($heap->{'username'}) || !$heap->{'config'}->{'filter_self'})) {
+            if (!$silent) {
+                foreach my $chan (keys %{$heap->{'channels'}}) {
+# - Send the message to the #twitter-channel if it is different from my latest update (IE different from current topic)
+                    if ($chan eq '#twitter' && exists $heap->{'channels'}->{$chan}->{'names'}->{$item->{'user'}->{'screen_name'}} && $item->{'text'} ne $heap->{'channels'}->{$chan}->{'topic'}) {
+# TODO clean this logic block
+# TODO change filtering for realname / urls to happen here, along with general filtering
+# Fixing issue #81
+                        if(defined($item->{'retweeted_status'})) {
+                            $kernel->yield('user_msg','PRIVMSG',$item->{'user'}->{'screen_name'},$chan,$item->{'tircd_ticker_slot_display'} . 'RT @' . $item->{'retweeted_status'}->{'user'}->{'screen_name'} . ': ' . $item->{'retweeted_status'}->{'text'});
+                        }
+                        else {
+                            $kernel->yield('user_msg','PRIVMSG',$item->{'user'}->{'screen_name'},$chan,$item->{'tircd_ticker_slot_display'} . $item->{'text'});
+                        }
+                    }
+# - Send the message to the other channels the user is in if the user is not "me"
+                    if ($chan ne '#twitter' && exists $heap->{'channels'}->{$chan}->{'names'}->{$item->{'user'}->{'screen_name'}} && $item->{'user'}->{'screen_name'} ne $heap->{'username'}) {
+                        $kernel->yield('user_msg','PRIVMSG',$item->{'user'}->{'screen_name'},$chan,$item->{'tircd_ticker_slot_display'} . $item->{'text'});
+                    }
+# - And set topic on the #twitter channel if user is me and the topic is not already set
+                    if ($chan eq '#twitter' && $item->{'user'}->{'screen_name'} eq $heap->{'username'} && $item->{'text'} ne $heap->{'channels'}->{$chan}->{'topic'}) {
+                        $kernel->yield('user_msg','TOPIC',$heap->{'username'},$chan,"$heap->{'username'}'s last update: ".$item->{'text'});
+                        $heap->{'channels'}->{$chan}->{'topic'} = $item->{'text'};
+                    }
+                }
+            }
+        }
+#TODO easier way to judge self?
+        if (lc($item->{'user'}->{'screen_name'}) ne lc($heap->{'username'})) {
+            if (($is_following->{'status'}) && ($is_following->{'following'} == 0)) {
+# If we are not following them - have them part #twitter again
+                $kernel->yield('user_msg','PART',$item->{'user'}->{'screen_name'},'#twitter') unless ($silent);
+                delete $heap->{'channels'}->{'#twitter'}->{'names'}->{$item->{'user'}->{'screen_name'}};
+            }
+        }
     }
 
-    # filter out our own messages / don't display if not in silent mode
-    # Olatho - Don't understand what the original code tried to do, but my changes tries to do the right thing
-    # This will lead to seeing messages twice if you are tweeting actively, as messages are parsed both when you tweet, and when tircd receives the updates
-    # But I prefer that instead of missing messages I add from other clients
-    # This can be fixed by using a global buffer/cache to filter out the messages, not just the latest topic
-    if ((lc($item->{'user'}->{'screen_name'}) ne lc($heap->{'username'}) || !$heap->{'config'}->{'filter_self'})) {
-      if (!$silent) {
-        foreach my $chan (keys %{$heap->{'channels'}}) {
-          # - Send the message to the #twitter-channel if it is different from my latest update (IE different from current topic)
-          if ($chan eq '#twitter' && exists $heap->{'channels'}->{$chan}->{'names'}->{$item->{'user'}->{'screen_name'}} && $item->{'text'} ne $heap->{'channels'}->{$chan}->{'topic'}) {
-            # TODO clean this logic block
-            # TODO change filtering for realname / urls to happen here, along with general filtering
-            # Fixing issue #81
-            if(defined($item->{'retweeted_status'})) {
-              $kernel->yield('user_msg','PRIVMSG',$item->{'user'}->{'screen_name'},$chan,$item->{'tircd_ticker_slot_display'} . 'RT @' . $item->{'retweeted_status'}->{'user'}->{'screen_name'} . ': ' . $item->{'retweeted_status'}->{'text'});
-            }
-            else {
-              $kernel->yield('user_msg','PRIVMSG',$item->{'user'}->{'screen_name'},$chan,$item->{'tircd_ticker_slot_display'} . $item->{'text'});
-            }
-          }
-          # - Send the message to the other channels the user is in if the user is not "me"
-          if ($chan ne '#twitter' && exists $heap->{'channels'}->{$chan}->{'names'}->{$item->{'user'}->{'screen_name'}} && $item->{'user'}->{'screen_name'} ne $heap->{'username'}) {
-            $kernel->yield('user_msg','PRIVMSG',$item->{'user'}->{'screen_name'},$chan,$item->{'tircd_ticker_slot_display'} . $item->{'text'});
-          }
-          # - And set topic on the #twitter channel if user is me and the topic is not already set
-          if ($chan eq '#twitter' && $item->{'user'}->{'screen_name'} eq $heap->{'username'} && $item->{'text'} ne $heap->{'channels'}->{$chan}->{'topic'}) {
-            $kernel->yield('user_msg','TOPIC',$heap->{'username'},$chan,"$heap->{'username'}'s last update: ".$item->{'text'});
-            $heap->{'channels'}->{$chan}->{'topic'} = $item->{'text'};
-          }
-        }
-      }
+    if ($heap->{'config'}->{'update_timeline'} > 0) {
+        $kernel->delay('twitter_timeline',$heap->{'config'}->{'update_timeline'});
     }
-    #TODO easier way to judge self?
-    if (lc($item->{'user'}->{'screen_name'}) ne lc($heap->{'username'})) {
-      if (($is_following->{'status'}) && ($is_following->{'following'} == 0)) {
-        # If we are not following them - have them part #twitter again
-        $kernel->yield('user_msg','PART',$item->{'user'}->{'screen_name'},'#twitter') unless ($silent);
-        delete $heap->{'channels'}->{'#twitter'}->{'names'}->{$item->{'user'}->{'screen_name'}};
-      }
-    }
-  }
-
-  if ($heap->{'config'}->{'update_timeline'} > 0) {
-    $kernel->delay('twitter_timeline',$heap->{'config'}->{'update_timeline'});
-  }
 }
 
 #same as above, but for direct messages, show 'em as PRIVMSGs from the user
@@ -1819,7 +1831,7 @@ sub twitter_direct_messages {
         my $tmp = $item->{'sender'};
         $tmp->{'status'} = $item;
         $tmp->{'status'}->{'text'} = '(dm) '.$tmp->{'status'}->{'text'};
-        push(@{$heap->{'friends'}},$tmp);
+        $heap->{'friends'}->{$tmp->{'id'}} = $tmp;
         $kernel->yield('user_msg','JOIN',$item->{'sender'}->{'screen_name'},'#twitter');
         if ($kernel->call($_[SESSION],'getfollower',$item->{'user'}->{'screen_name'})) {
           $heap->{'channels'}->{'#twitter'}->{'names'}->{$item->{'user'}->{'screen_name'}} = '+';
@@ -1859,52 +1871,54 @@ sub get_timeline_ticker_slot {
 
 
 sub twitter_search {
-  my ($kernel, $heap, $chan) = @_[KERNEL, HEAP, ARG0];
+    my ($kernel, $heap, $chan) = @_[KERNEL, HEAP, ARG0];
 
-  if (!$heap->{'channels'}->{$chan}->{'joined'} || !$heap->{'channels'}->{$chan}->{'topic'}) {
+    if (!$heap->{'channels'}->{$chan}->{'joined'} || !$heap->{'channels'}->{$chan}->{'topic'}) {
     #if we aren't in the channel, don't do anything, this will keep us from restarting timers for channels we are no longer in
-    return;
-  }
-
-  my $data;
-  my $error;
-  if ($heap->{'channels'}->{$chan}->{'search_since_id'}) {
-    $data = eval {$heap->{'twitter'}->search({q => $heap->{'channels'}->{$chan}->{'topic'}, rpp => 100, since_id => $heap->{'channels'}->{$chan}->{'search_since_id'}, include_entities => 1});};
-    $error = $@;
-  } else {
-    $data = eval {$heap->{'twitter'}->search({q => $heap->{'channels'}->{$chan}->{'topic'}, rpp => 100, include_entities => 1});};
-    $error = $@;
-  }
-
-  my $delay = 30;
-
-  if (!$data || $data->{'search_metadata'}->{'max_id'} < $heap->{'channels'}->{$chan}->{'search_since_id'} ) {
-    $data = {results => []};
-    $kernel->call($_[SESSION],'twitter_api_error','Unable to update search results.',$error);
-    if ($error) {
-      if ($error->code() == 420) {
-        # We are ratelimited
-        $delay = 400;
-        $kernel->post('logger','log','We are ratelimited, waiting for '. $delay .' seconds before repeating search',$heap->{'username'});
-      }
+        return;
     }
 
-  } else {
-    $heap->{'channels'}->{$chan}->{'search_since_id'} = $data->{'search_metadata'}->{'max_id'};
-    if (@{$data->{'statuses'}} > 0) {
-      $kernel->post('logger','log','Received '.@{$data->{'statuses'}}.' search results from Twitter.',$heap->{'username'});
+    my $data;
+    my $error;
+    my $delay=30;
+    if ($heap->{'channels'}->{$chan}->{'search_since_id'}) {
+        $data = eval {$heap->{'twitter'}->search({q => $heap->{'channels'}->{$chan}->{'topic'}, rpp => 100, since_id => $heap->{'channels'}->{$chan}->{'search_since_id'}, include_entities => 1});};
+        $error = $@;
+    } else {
+        $data = eval {$heap->{'twitter'}->search({q => $heap->{'channels'}->{$chan}->{'topic'}, rpp => 100, include_entities => 1});};
+        $error = $@;
     }
-  }
 
-  foreach my $result (sort {$a->{'id'} <=> $b->{'id'}} @{$data->{'statuses'}}) {
-    ### Search API does not support entities yet.
-    #   When that happens we should either copy the code from timeline to expand urls and realname
-    #   Or we should split that out as a function
-    #   /Olatho
-    if ($result->{'user'}->{'screen_name'} ne $heap->{'username'}) {
-      $kernel->yield('user_msg','PRIVMSG',$result->{'user'}->{'screen_name'},$chan,$result->{'text'});
+    # Handle no data returned
+    if (!$data || $data->{'search_metadata'}->{'max_id'} < $heap->{'channels'}->{$chan}->{'search_since_id'} ) {
+        $data = { results => [] };
+        $kernel->call($_[SESSION],'twitter_api_error','Unable to update search results.',$error);
+
+        if ($error) {
+            print Dumper($error);
+            if ($error->code() == 420) {
+                # We are ratelimited
+                $delay = 400;
+                $kernel->call('logger','log','We are ratelimited, waiting for '. $delay .' seconds before repeating search',$heap->{'username'});
+            } else {
+                # Something else happened or ratelimit error code changed
+                $kernel->call('logger','log','Got unexpected error from twitter::Search');
+                $kernel->delay_add('twitter_search',$delay,$chan);
+            }
+        }
+    } else {
+        $heap->{'channels'}->{$chan}->{'search_since_id'} = $data->{'search_metadata'}->{'max_id'};
+        if (@{$data->{'statuses'}} > 0) {
+            $kernel->call('logger','log','Received '.@{$data->{'statuses'}}.' search results from Twitter.',$heap->{'username'});
+        }
     }
-  }
+
+    foreach my $result (sort {$a->{'id'} <=> $b->{'id'}} @{$data->{'statuses'}}) {
+        #TODO Use common entity filter for search results
+        if ($result->{'user'}->{'screen_name'} ne $heap->{'username'}) {
+            $kernel->yield('user_msg','PRIVMSG',$result->{'user'}->{'screen_name'},$chan,$result->{'text'});
+        }
+    }
 
   $kernel->delay_add('twitter_search',$delay,$chan);
 }
