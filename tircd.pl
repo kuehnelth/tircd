@@ -49,6 +49,8 @@ if ($ARGV[0]) {
   $config_file = 'tircd.cfg';
 } elsif (-e bsd_glob('~',GLOB_TILDE | GLOB_ERR).'/.tircd') {
   $config_file = bsd_glob('~',GLOB_TILDE | GLOB_ERR).'/.tircd';
+} elsif (-e bsd_glob('~',GLOB_TILDE | GLOB_ERR).'/.tircd.cfg') {
+  $config_file = bsd_glob('~',GLOB_TILDE | GLOB_ERR).'/.tircd.cfg';
 }
 
 open(C,$config_file) || die("$0: Unable to load config file ($config_file): $!\n");
