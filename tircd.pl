@@ -19,8 +19,8 @@ use URI qw/host/;
 use List::Util 'shuffle';
 # @Olatho - issue 45
 use HTML::Entities;
+use Digest::SHA  qw(sha1_base64);
 
-use Digest::SHA1  qw(sha1_base64);
 
 
 my $VERSION = 2011082301;
