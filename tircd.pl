@@ -1898,33 +1898,38 @@ sub twitter_search {
     $error = $@;
   }
 
-  my $delay = 30;
 
-  if (!$data || $data->{'search_metadata'}->{'max_id'} < $heap->{'channels'}->{$chan}->{'search_since_id'} ) {
-    $data = {results => []};
-    $kernel->call($_[SESSION],'twitter_api_error','Unable to update search results.',$error);
-    if ($error) {
-      if ($error->code() == 420) {
-        # We are ratelimited
-        $delay = 400;
-        $kernel->post('logger','log','We are ratelimited, waiting for '. $delay .' seconds before repeating search',$heap->{'username'});
-      }
+  if ($error) {
+    # We are ratelimited
+    if ($error->code() == 420) {
+      $delay = 400;
+      $kernel->call('logger','log','We are ratelimited, waiting for ' .
+      $delay .' seconds before repeating search',$heap->{'username'});
+    } else {
+      # Something else happened or ratelimit error code changed
+      $kernel->call('logger','log','Got unexpected error from twitter::Search');
+      print Dumper($data);
+      $kernel->delay_add('twitter_search',$delay,$chan);
     }
+  }
 
-  } else {
+  # Handle no data returned
+  if (!$data || $data->{'search_metadata'}->{'max_id'} < $heap->{'channels'}->{$chan}->{'search_since_id'} || $error  ) {
+    $data = { results => [] };
+    $kernel->call($_[SESSION],'twitter_api_error','Unable to update search results.',$error);
+
+  }
+  else {
     $heap->{'channels'}->{$chan}->{'search_since_id'} = $data->{'search_metadata'}->{'max_id'};
     if (@{$data->{'statuses'}} > 0) {
       $kernel->post('logger','log','Received '.@{$data->{'statuses'}}.' search results from Twitter.',$heap->{'username'});
     }
-  }
 
-  foreach my $result (sort {$a->{'id'} <=> $b->{'id'}} @{$data->{'statuses'}}) {
-    ### Search API does not support entities yet.
-    #   When that happens we should either copy the code from timeline to expand urls and realname
-    #   Or we should split that out as a function
-    #   /Olatho
-    if ($result->{'user'}->{'screen_name'} ne $heap->{'username'}) {
-      $kernel->yield('user_msg','PRIVMSG',$result->{'user'}->{'screen_name'},$chan,$result->{'text'});
+    foreach my $result (sort {$a->{'id'} <=> $b->{'id'}} @{$data->{'statuses'}}) {
+      #TODO Use common entity filter for search results
+      if ($result->{'user'}->{'screen_name'} ne $heap->{'username'}) {
+          $kernel->yield('user_msg','PRIVMSG',$result->{'user'}->{'screen_name'},$chan,$result->{'text'});
+      }
     }
   }
 
