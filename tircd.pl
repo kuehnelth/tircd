@@ -104,6 +104,13 @@ if ($config{'logtype'} ne 'none') {
   );
 }
 
+if (defined($config{'pidfile'})) {
+  my $pidfd;
+  open($pidfd, '>'.$config{'pidfile'}) or die "failed to create PID file \"".$config{'pidfile'}."\": $!";
+  print $pidfd $$;
+  close($pidfd);
+}
+
 #setup our 'irc server'
 POE::Component::Server::TCP->new(
   Alias     => "tircd",
@@ -187,6 +194,19 @@ sub tircd_setup {
     $_[KERNEL]->call('logger','log',"Using Net::Twitter::Lite version: $Net::Twitter::Lite::VERSION");
     $_[KERNEL]->call('logger','log',"Using LWP::UserAgent version: $LWP::UserAgent::VERSION");
     $_[KERNEL]->call('logger','log',"Using POE::Filter::IRCD version: $POE::Filter::IRCD::VERSION");
+  }
+  if (defined($config{'daemon_user'})) {
+    if ($> == 0) {
+      my ($name, $passwd, $uid) = getpwnam($config{'daemon_user'});
+      if (defined($name)) {
+        $_[KERNEL]->call('logger','log',"Switching user to ".$config{'daemon_user'}.".");
+        $> = $uid;
+      } else {
+        $_[KERNEL]->call('logger','log',"Unknown user ".$config{'daemon_user'}.".");
+      }
+    } else {
+      $_[KERNEL]->call('logger','log',"Not switching user to ".$config{'daemon_user'}.", not running as root.");
+    }
   }
 }
 
