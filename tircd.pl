@@ -29,12 +29,7 @@ my $VERSION = 2011082301;
 my $tw_oauth_con_key = "4AQca4GFiWWaifUknq35Q";
 my $tw_oauth_con_sec = "VB0exmHlErkx4GUUsXvoR4bqaXi56Rl43NL1Z9Q";
 
-# I have no idea what the minimum Net::Twitter::Lite version is
-#Do some sanity checks on the environment and warn if not what we want
-#if ($Net::Twitter::Lite::VERSION < 2.10) {
-#  print "Warning: Your system has an old version of Net::Twitter::Lite.  Please upgrade to the current version.\n";
-#}
-
+# Test JSON module availability
 my $j = JSON::Any->new;
 if ($j->handlerType eq 'JSON::Syck') {
   print "Warning: Your system is using JSON::Syck. This will cause problems with character encoding.   Please install JSON::PP or JSON::XS.\n";
