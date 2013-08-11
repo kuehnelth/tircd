@@ -361,8 +361,8 @@ sub twitter_oauth_login_begin {
     # If password is set in user state - check that is is correct
     if ($heap->{'config'}->{'password'} =~ m#[a-zA-Z0-9+/]{27}# ) {
       if ($heap->{'password'} ne $heap->{'config'}->{'password'}) {
-        $kernel->post('logger','log','Connection refused with the supplied credentials.',$heap->{'username'});
-        $kernel->yield('server_reply',464,'Connection refused with the supplied credentials.');
+        $kernel->post('logger','log','IRC Connection refused with the supplied credentials.',$heap->{'username'});
+        $kernel->yield('server_reply',464,'IRC Connection refused with the supplied credentials.');
         $kernel->yield('shutdown'); #disconnect 'em if we cant verify password
         return;
       }
