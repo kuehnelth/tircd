@@ -1016,12 +1016,18 @@ sub irc_whois {
 
     #set their idle time, to the time since last message (if we have one, the api won't return the most recent message for users who haven't updated in a long time)
     my $diff = 0;
+    my $created_date = 0;
     my %mon2num = qw(Jan 0 Feb 1 Mar 2 Apr 3 May 4 Jun 5 Jul 6 Aug 7 Sep 8 Oct 9 Nov 10 Dec 11);
     if ($friend->{'status'}->{'created_at'} =~ /\w+ (\w+) (\d+) (\d+):(\d+):(\d+) [+|-]\d+ (\d+)/) {
         my $date = timegm($5,$4,$3,$2,$mon2num{$1},$6);
         $diff = time()-$date;
     }
-    $kernel->yield('server_reply',317,$target,$diff,'seconds idle');
+
+    if ($friend->{'created_at'} =~ /\w+ (\w+) (\d+) (\d+):(\d+):(\d+) [+|-]\d+ (\d+)/) {
+        $created_date = timegm($5,$4,$3,$2,$mon2num{$1},$6);
+    }
+
+    $kernel->yield('server_reply',317,$target,$diff, $created_date,'seconds idle, signon time');
 
     my $all_chans = '';
     foreach my $chan (keys %{$heap->{'channels'}}) {
