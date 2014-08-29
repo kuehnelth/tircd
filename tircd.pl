@@ -409,7 +409,7 @@ sub twitter_oauth_login_begin {
 
   $kernel->yield('server_reply',463,'OAuth authentication beginning.');
 
-  $heap->{'twitter'} = Net::Twitter::Lite::WithAPIv1_1->new(%{$heap->{'nt_params'}});
+  $heap->{'twitter'} = Net::Twitter::Lite::WithAPIv1_1->new(%{$heap->{'nt_params'}},ssl => 1);
 
   # load user config from disk for reusing tokens
   if (-d $config{'storage_path'}) {
