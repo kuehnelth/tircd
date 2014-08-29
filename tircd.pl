@@ -976,7 +976,7 @@ sub irc_whois {
 
   if ($friend) {
     $kernel->post('logger','log',"Received user information for $target from Twitter.",$heap->{'username'});
-    $kernel->yield('server_reply',311,$target,$target,'twitter','*',$friend->{'name'});
+    $kernel->yield('server_reply',311,$target,$target,'twitter','*',':'.$friend->{'name'});
 
     #send a bunch of 301s to convey all the twitter info, not sure if this is totally legit, but the clients I tested with seem ok with it
     if ($friend->{'location'}) {
